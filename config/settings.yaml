@@ -1,0 +1,27 @@
+citation_style: APA7
+language: english
+processing_mode: full
+domain_terms: []
+author_name: ""
+university_name: ""
+margins_cm: 2.54
+font_name: Times New Roman
+font_size: 12
+line_spacing: 2.0
+self_test_threshold: 0.05
+back_translation_languages:
+  - de
+  - ja
+hedging_words:
+  - suggests
+  - tends to
+  - predominantly
+  - appears to
+  - may indicate
+ai_cliches:
+  - at the end of the day
+  - in the digital age
+  - transformative
+  - comprehensive
+  - moreover
+  - furthermore
