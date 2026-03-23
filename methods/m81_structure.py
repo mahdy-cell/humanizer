@@ -343,9 +343,6 @@ def method_90_live_link_verification(
     return text
 
 
-WAYBACK_API = "https://archive.org/wayback/available?url={url}"
-
-
 # ── Module convenience function ───────────────────────────────────────────
 
 def run_all(
