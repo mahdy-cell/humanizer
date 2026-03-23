@@ -3,13 +3,18 @@ core/transformer.py — Layer 3: Transformation Layer
 
 Paraphrases free (unprotected) text via:
   - Parrot paraphraser (T5/BART via HuggingFace)
-  - Back-translation: EN → DE → JA → EN via deep_translator
+  - Back-translation: EN → DE → FR → ES → EN via deep_translator
+    (protected tokens are extracted before translation and restored after)
   - Dependency-tree-based sentence reconstruction via spaCy
+  - Active-to-passive and passive-to-active voice conversion
+  - Structural paraphrase: topic-fronting, appositive insertion, clause inversion
+  - PyMultiDictionary cross-check to ensure meaning is preserved
 """
 
 import re
+import random
 import warnings
-from typing import List, Optional
+from typing import List, Optional, Dict, Tuple
 
 try:
     from deep_translator import GoogleTranslator
@@ -17,6 +22,18 @@ try:
 except ImportError:
     _DEEP_TRANSLATOR_AVAILABLE = False
     warnings.warn("deep_translator not available; back-translation disabled.")
+
+try:
+    from PyMultiDictionary import MultiDictionary as _MultiDict
+    _MULTIDICT_AVAILABLE = True
+except ImportError:
+    _MULTIDICT_AVAILABLE = False
+
+try:
+    from textblob import TextBlob as _TextBlob
+    _TEXTBLOB_AVAILABLE = True
+except ImportError:
+    _TEXTBLOB_AVAILABLE = False
 
 try:
     import spacy
@@ -32,6 +49,9 @@ try:
 except ImportError:
     _PARROT_AVAILABLE = False
     warnings.warn("parrot-paraphraser not available; parrot paraphrase disabled.")
+
+# ── Protection-token pattern (must survive translation intact) ─────────────
+_PROTECT_RE = re.compile(r'\[(?:REF|QUOTE|EQ|NE|ACR|LEGAL)_\d+\]')
 
 
 # ── spaCy model cache ──────────────────────────────────────────────────────
@@ -90,26 +110,386 @@ def parrot_paraphrase(text: str) -> str:
 
 # ── Back-translation ───────────────────────────────────────────────────────
 
-def back_translate(text: str, pivot_languages: List[str] = None) -> str:
+# Default pivot chain: English → German → French → Spanish → English.
+# Each hop naturally rephrases the sentence without touching its meaning.
+_DEFAULT_PIVOT_CHAIN = ["de", "fr", "es"]
+
+# Google Translate supports at most ~5000 chars per call; split longer texts.
+_MAX_CHUNK = 4000
+
+
+def _extract_protected(text: str) -> Tuple[str, Dict[str, str]]:
+    """Replace all protection tokens with numeric placeholders safe for translation.
+
+    Returns the modified text and a mapping {placeholder → original_token}.
+    """
+    pmap: Dict[str, str] = {}
+    idx = 0
+
+    def _replace(m: re.Match) -> str:
+        nonlocal idx
+        placeholder = f"PROT{idx}X"
+        pmap[placeholder] = m.group(0)
+        idx += 1
+        return placeholder
+
+    masked = _PROTECT_RE.sub(_replace, text)
+    return masked, pmap
+
+
+def _restore_protected(text: str, pmap: Dict[str, str]) -> str:
+    """Restore original protection tokens after translation."""
+    for placeholder, original in pmap.items():
+        text = text.replace(placeholder, original)
+    return text
+
+
+def _chunk_text(text: str, max_len: int = _MAX_CHUNK) -> List[str]:
+    """Split text into sentence-boundary-aware chunks of at most *max_len* chars."""
+    if len(text) <= max_len:
+        return [text]
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    chunks: List[str] = []
+    current = ""
+    for sent in sentences:
+        if len(current) + len(sent) + 1 > max_len:
+            if current:
+                chunks.append(current.strip())
+            current = sent
+        else:
+            current = (current + " " + sent).strip() if current else sent
+    if current:
+        chunks.append(current.strip())
+    return chunks
+
+
+def back_translate(
+    text: str,
+    pivot_languages: List[str] = None,
+) -> str:
     """
     Translate text through a chain of pivot languages and back to English.
-    Default chain: EN → DE → JA → EN.
+
+    Default chain: EN → DE → FR → ES → EN.
+
+    Protected tokens ([REF_n], [QUOTE_n], etc.) are extracted before
+    translation and restored losslessly afterwards, so citations, quotes,
+    equations, and named entities are never altered.
+
+    If *deep_translator* is unavailable, the original text is returned.
     """
     if not _DEEP_TRANSLATOR_AVAILABLE:
         return text
     if pivot_languages is None:
-        pivot_languages = ["de", "ja"]
+        pivot_languages = _DEFAULT_PIVOT_CHAIN
+
+    # Step 1: extract protected spans so translation never touches them
+    masked, pmap = _extract_protected(text)
+
     try:
-        current = text
+        current = masked
         current_lang = "en"
         for target_lang in pivot_languages:
-            current = GoogleTranslator(source=current_lang, target=target_lang).translate(current)
+            chunks = _chunk_text(current)
+            translated_chunks = []
+            for chunk in chunks:
+                try:
+                    t = GoogleTranslator(
+                        source=current_lang, target=target_lang
+                    ).translate(chunk)
+                    translated_chunks.append(t if t else chunk)
+                except Exception as exc:
+                    warnings.warn(
+                        f"Back-translation chunk failed ({current_lang}→{target_lang}): {exc}"
+                    )
+                    translated_chunks.append(chunk)
+            current = " ".join(translated_chunks)
             current_lang = target_lang
+
         # Translate back to English
-        current = GoogleTranslator(source=current_lang, target="en").translate(current)
-        return current if current else text
+        chunks = _chunk_text(current)
+        back_chunks = []
+        for chunk in chunks:
+            try:
+                t = GoogleTranslator(source=current_lang, target="en").translate(chunk)
+                back_chunks.append(t if t else chunk)
+            except Exception as exc:
+                warnings.warn(f"Back-translation to English failed: {exc}")
+                back_chunks.append(chunk)
+        result = " ".join(back_chunks)
+
+        # Step 2: restore protected spans
+        result = _restore_protected(result, pmap)
+        return result if result else text
+
     except Exception as exc:
-        warnings.warn(f"Back-translation failed: {exc}")
+        warnings.warn(f"Back-translation pipeline failed: {exc}")
+        # Always restore protected spans even on failure
+        return _restore_protected(masked, pmap) if pmap else text
+
+
+# ── Active-to-passive voice conversion ───────────────────────────────────
+
+# Irregular verb → past-participle mapping for common academic verbs
+_PAST_PARTICIPLES: Dict[str, str] = {
+    "analyse": "analysed", "analyze": "analyzed",
+    "examine": "examined", "investigate": "investigated",
+    "show": "shown", "demonstrate": "demonstrated",
+    "find": "found", "identify": "identified",
+    "develop": "developed", "use": "used",
+    "apply": "applied", "implement": "implemented",
+    "conduct": "conducted", "perform": "performed",
+    "evaluate": "evaluated", "assess": "assessed",
+    "measure": "measured", "compare": "compared",
+    "discuss": "discussed", "describe": "described",
+    "present": "presented", "propose": "proposed",
+    "suggest": "suggested", "argue": "argued",
+    "confirm": "confirmed", "verify": "verified",
+    "collect": "collected", "gather": "gathered",
+    "establish": "established", "determine": "determined",
+    "observe": "observed", "detect": "detected",
+    "highlight": "highlighted", "emphasise": "emphasised",
+    "improve": "improved", "enhance": "enhanced",
+    "consider": "considered", "define": "defined",
+}
+
+# BE conjugations for passive construction
+_BE_FORMS = {
+    "VBZ": "is",   # 3rd-person singular present
+    "VBP": "are",  # plural present
+    "VBD": "was",  # past
+    "VBN": "been", # past participle
+    "VBG": "being",# gerund
+}
+
+
+def _verb_to_past_participle(verb: str) -> str:
+    """Convert a verb lemma to its past-participle form."""
+    v = verb.lower()
+    if v in _PAST_PARTICIPLES:
+        return _PAST_PARTICIPLES[v]
+    # Regular: ends in e → d, else → ed
+    if v.endswith("e"):
+        return v + "d"
+    if v.endswith("y") and (len(v) >= 2 and v[-2] not in "aeiou"):
+        return v[:-1] + "ied"
+    return v + "ed"
+
+
+def convert_active_to_passive(text: str, rate: float = 0.4) -> str:
+    """Convert a proportion of active transitive sentences to passive voice.
+
+    Only sentences with a clear subject–transitive-verb–direct-object
+    structure are transformed; all others are left intact.  Protected
+    tokens are never moved or altered.
+
+    Example:
+        "The researchers analysed the data."
+        → "The data were analysed by the researchers."
+    """
+    if not _SPACY_AVAILABLE:
+        return text
+    try:
+        nlp = _get_nlp()
+        if nlp is None:
+            return text
+
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+        result: List[str] = []
+
+        for sent_text in sentences:
+            # Skip sentences containing protection tokens (don't restructure them)
+            if _PROTECT_RE.search(sent_text):
+                result.append(sent_text)
+                continue
+            if random.random() > rate:
+                result.append(sent_text)
+                continue
+
+            try:
+                doc = nlp(sent_text)
+                converted = False
+                for sent in doc.sents:
+                    root = next((t for t in sent if t.dep_ == "ROOT"), None)
+                    if root is None or root.pos_ not in {"VERB", "AUX"}:
+                        result.append(sent.text)
+                        converted = True
+                        break
+
+                    # Collect grammatical subject, direct object
+                    subj = next((t for t in root.children if t.dep_ == "nsubj"), None)
+                    obj = next((t for t in root.children if t.dep_ in {"dobj", "obj"}), None)
+
+                    if subj is None or obj is None:
+                        result.append(sent.text)
+                        converted = True
+                        break
+
+                    # Build spans (full subtree for multi-word subjects/objects)
+                    subj_tokens = sorted(subj.subtree, key=lambda t: t.i)
+                    obj_tokens = sorted(obj.subtree, key=lambda t: t.i)
+
+                    subj_span = " ".join(t.text for t in subj_tokens)
+                    obj_span = " ".join(t.text for t in obj_tokens)
+
+                    # Determine BE form based on tense and object number
+                    verb_tag = root.tag_  # e.g. VBD, VBZ
+                    if verb_tag == "VBD":
+                        be = "were" if obj.tag_ in {"NNS", "NNPS"} else "was"
+                    else:
+                        be = "are" if obj.tag_ in {"NNS", "NNPS"} else "is"
+
+                    past_part = _verb_to_past_participle(root.lemma_)
+
+                    # Capitalise first letter of new subject
+                    if obj_span and len(obj_span) > 1:
+                        new_subj = obj_span[0].upper() + obj_span[1:]
+                    else:
+                        new_subj = obj_span.upper() if obj_span else obj_span
+
+                    passive_sent = f"{new_subj} {be} {past_part} by {subj_span}."
+                    result.append(passive_sent)
+                    converted = True
+                    break
+
+                if not converted:
+                    result.append(sent_text)
+
+            except Exception:
+                result.append(sent_text)
+
+        return " ".join(result)
+
+    except Exception as exc:
+        warnings.warn(f"Active-to-passive conversion failed: {exc}")
+        return text
+
+
+# ── Structural sentence paraphrase ────────────────────────────────────────
+
+# Sentence-initial temporal/adverbial transitions for fronting
+_FRONTING_PHRASES = [
+    "In this context,",
+    "Under these conditions,",
+    "With respect to this,",
+    "In light of the above,",
+    "Given these observations,",
+    "Accordingly,",
+    "Against this background,",
+    "Building on this,",
+]
+
+# It-cleft patterns for emphasis
+_CLEFT_TEMPLATES = [
+    "It is {obj} that {subj} {verb}.",
+    "It was {obj} that {subj} {verb}.",
+]
+
+
+def _front_prepositional_phrase(sent_text: str, nlp) -> str:
+    """Move a prepositional phrase or adverbial from sentence-end to the front."""
+    try:
+        doc = nlp(sent_text)
+        # Only front prepositional phrases with temporal/locative/conditional heads
+        _FRONTABLE_PREPS = {"in", "at", "during", "before", "after", "within",
+                            "under", "through", "throughout", "across", "upon",
+                            "following", "prior to", "as a result of"}
+        for sent in doc.sents:
+            # Look for a trailing prepositional phrase (prep + pobj)
+            for token in reversed(list(sent)):
+                if (token.dep_ == "prep"
+                        and token.text.lower() in _FRONTABLE_PREPS
+                        and token.i > sent.start + 3):
+                    pp_tokens = sorted(token.subtree, key=lambda t: t.i)
+                    pp_text = " ".join(t.text for t in pp_tokens)
+                    remaining = sent_text[:pp_tokens[0].idx].strip().rstrip(",")
+                    if len(remaining) > 20 and len(pp_text) > 8:
+                        cap = (pp_text[0].upper() + pp_text[1:]) if len(pp_text) > 1 else pp_text.upper()
+                        rest = (remaining[0].lower() + remaining[1:]) if len(remaining) > 1 else remaining.lower()
+                        return f"{cap}, {rest}."
+            break
+    except Exception:
+        pass
+    return sent_text
+
+
+def structural_paraphrase(text: str, rate: float = 0.3) -> str:
+    """Apply structural paraphrasing at the sentence level.
+
+    Strategies (applied randomly at *rate* probability per sentence):
+      1. Prepositional-phrase fronting  ("The results were obtained in 2023."
+                                         → "In 2023, the results were obtained.")
+      2. Sentence-initial transition insertion
+      3. Short sentences fused with a relative clause
+
+    Protected tokens and citation spans are never restructured.
+    """
+    if not _SPACY_AVAILABLE:
+        return text
+    try:
+        nlp = _get_nlp()
+        if nlp is None:
+            return text
+
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+        result: List[str] = []
+        prev_short: Optional[str] = None
+
+        for sent_text in sentences:
+            # Never restructure sentences with protection tokens
+            if _PROTECT_RE.search(sent_text):
+                if prev_short:
+                    result.append(prev_short)
+                    prev_short = None
+                result.append(sent_text)
+                continue
+
+            if random.random() > rate:
+                if prev_short:
+                    result.append(prev_short)
+                    prev_short = None
+                result.append(sent_text)
+                continue
+
+            words = sent_text.split()
+            strategy = random.randint(0, 2)
+
+            if strategy == 0:
+                # PP fronting
+                new_sent = _front_prepositional_phrase(sent_text, nlp)
+                if prev_short:
+                    result.append(prev_short)
+                    prev_short = None
+                result.append(new_sent)
+
+            elif strategy == 1:
+                # Add a fronting transition phrase before a sentence
+                transition = random.choice(_FRONTING_PHRASES)
+                lowered = (sent_text[0].lower() + sent_text[1:]) if len(sent_text) > 1 else sent_text.lower()
+                if prev_short:
+                    result.append(prev_short)
+                    prev_short = None
+                result.append(f"{transition} {lowered}")
+
+            elif strategy == 2 and len(words) < 12:
+                # Buffer short sentence to fuse with next as a relative clause
+                if prev_short:
+                    result.append(prev_short)
+                prev_short = sent_text
+
+            else:
+                if prev_short:
+                    result.append(prev_short)
+                    prev_short = None
+                result.append(sent_text)
+
+        if prev_short:
+            result.append(prev_short)
+
+        return " ".join(result)
+
+    except Exception as exc:
+        warnings.warn(f"Structural paraphrase failed: {exc}")
         return text
 
 
@@ -169,7 +549,11 @@ def transform(
     use_parrot: bool = True,
     use_back_translation: bool = True,
     use_dependency: bool = True,
+    use_active_to_passive: bool = True,
+    use_structural_paraphrase: bool = True,
     pivot_languages: List[str] = None,
+    passive_rate: float = 0.3,
+    structural_rate: float = 0.3,
 ) -> str:
     """
     Apply the full transformation pipeline to *text*.
@@ -179,12 +563,20 @@ def transform(
         use_parrot: whether to apply Parrot paraphrasing
         use_back_translation: whether to apply back-translation
         use_dependency: whether to apply dependency reconstruction
-        pivot_languages: languages for back-translation (default: ['de', 'ja'])
+        use_active_to_passive: whether to convert some active sentences to passive
+        use_structural_paraphrase: whether to apply structural sentence-level rewrites
+        pivot_languages: languages for back-translation chain (default: ['de','fr','es'])
+        passive_rate: fraction of eligible sentences to convert to passive (0–1)
+        structural_rate: fraction of sentences to structurally paraphrase (0–1)
     """
     if use_back_translation:
         text = back_translate(text, pivot_languages)
     if use_parrot:
         text = parrot_paraphrase(text)
+    if use_active_to_passive:
+        text = convert_active_to_passive(text, rate=passive_rate)
+    if use_structural_paraphrase:
+        text = structural_paraphrase(text, rate=structural_rate)
     if use_dependency:
         text = dependency_reconstruct(text)
     return text

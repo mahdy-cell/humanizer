@@ -58,22 +58,32 @@ try:
     import nltk as _nltk_pos
     from nltk import pos_tag as _pos_tag, word_tokenize as _word_tokenize
     _NLTK_POS_AVAILABLE = True
-    try:
-        _nltk_pos.data.find("taggers/averaged_perceptron_tagger")
-    except LookupError:
-        _nltk_pos.download("averaged_perceptron_tagger", quiet=True)
-    try:
-        _nltk_pos.data.find("tokenizers/punkt")
-    except LookupError:
-        _nltk_pos.download("punkt", quiet=True)
-    try:
-        _nltk_pos.data.find("tokenizers/punkt_tab")
-    except LookupError:
-        _nltk_pos.download("punkt_tab", quiet=True)
+    # Download all required NLTK data (new naming convention uses _eng suffix)
+    for _nltk_res in (
+        "taggers/averaged_perceptron_tagger",
+        "taggers/averaged_perceptron_tagger_eng",
+        "tokenizers/punkt",
+        "tokenizers/punkt_tab",
+    ):
+        try:
+            _nltk_pos.data.find(_nltk_res)
+        except LookupError:
+            _resource_name = _nltk_res.split("/")[-1]
+            _nltk_pos.download(_resource_name, quiet=True)
 except ImportError:
     _NLTK_POS_AVAILABLE = False
 
-# ── Built-in academic thesaurus (pure-Python fallback) ────────────────────
+try:
+    from PyMultiDictionary import MultiDictionary as _PyMultiDict
+    _PYMULTIDICT_AVAILABLE = True
+except ImportError:
+    _PYMULTIDICT_AVAILABLE = False
+
+try:
+    from textblob import TextBlob as _TextBlob
+    _TEXTBLOB_AVAILABLE = True
+except ImportError:
+    _TEXTBLOB_AVAILABLE = False
 # Each entry: word → list of synonyms with the same POS.
 # Format: { "word": ["syn1", "syn2", ...], ... }
 # POS categories are kept separate to allow targeted lookup.
@@ -715,6 +725,44 @@ def _get_builtin_synonyms(word: str, pos_tag: str = None) -> List[str]:
     return []
 
 
+# Cache to avoid repeated network calls
+_PYMD_CACHE: Dict[str, List[str]] = {}
+_PYMD_INSTANCE = None
+
+
+def _get_pymd_synonyms(word: str) -> List[str]:
+    """Return synonyms from PyMultiDictionary (cross-language dictionary lookup).
+
+    Results are cached per word to minimise lookups.
+    Returns an empty list when PyMultiDictionary is unavailable or lookup fails.
+    """
+    if not _PYMULTIDICT_AVAILABLE:
+        return []
+    global _PYMD_INSTANCE
+    key = word.lower()
+    if key in _PYMD_CACHE:
+        return _PYMD_CACHE[key]
+    try:
+        if _PYMD_INSTANCE is None:
+            _PYMD_INSTANCE = _PyMultiDict()
+        # Returns a list of (word, definition) pairs; we only want the words
+        raw = _PYMD_INSTANCE.synonym("en", key)
+        # raw may be a list of strings or tuples — normalise
+        syns: List[str] = []
+        for item in (raw or []):
+            if isinstance(item, str):
+                syns.append(item)
+            elif isinstance(item, (list, tuple)) and item:
+                syns.append(str(item[0]))
+        # Filter: single words only, different from original, no hyphens
+        syns = [s for s in syns if s.lower() != key and " " not in s and len(s) > 2]
+        _PYMD_CACHE[key] = syns
+        return syns
+    except Exception:
+        _PYMD_CACHE[key] = []
+        return []
+
+
 def _lemmatise_for_lookup(word: str, pos: str = "") -> str:
     """Strip common English inflections to obtain the base form for thesaurus lookup.
 
@@ -780,13 +828,17 @@ def _build_pos_map(text: str) -> Dict[str, str]:
     return pos_map
 
 
-def replace_synonyms(text: str, replacement_rate: float = 0.35) -> str:
-    """Replace *replacement_rate* fraction of content words with synonyms.
+def replace_synonyms(text: str, replacement_rate: float = 0.20) -> str:
+    """Replace *replacement_rate* fraction of content words with meaning-safe synonyms.
 
-    Uses POS-aware, curated thesaurus lookup first; only falls back to WordNet
-    for words not covered by the built-in dictionary.  Protected tokens
-    (``[REF_n]``, ``[QUOTE_n]``, etc.) are never touched.  Capitalisation and
-    basic inflections (plural -s, 3rd-person -s/-es, -ing, -ed) are preserved.
+    Priority order for synonym sources:
+      1. Built-in curated academic thesaurus (highest quality, no network needed)
+      2. PyMultiDictionary (cross-language dictionary — verified meanings)
+      3. WordNet filtered to known academic vocabulary (supplemental only)
+
+    Protected tokens (``[REF_n]``, ``[QUOTE_n]``, etc.) are never touched.
+    Capitalisation and basic inflections (-s/-es/-ed/-ing) are preserved.
+    Only words with ≥ 4 characters are candidates for replacement.
     """
     # Build word → POS map from NLTK (if available)
     pos_map = _build_pos_map(text)
@@ -822,7 +874,17 @@ def replace_synonyms(text: str, replacement_rate: float = 0.35) -> str:
             if not syns and base != clean.lower():
                 syns = _get_builtin_synonyms(clean.lower(), pos)
 
-            # 2. WordNet fallback (filtered to known academic vocabulary)
+            # 2. PyMultiDictionary (verified cross-language synonyms)
+            if not syns:
+                pymd_syns = _get_pymd_synonyms(base)
+                if pymd_syns:
+                    if _all_known:
+                        pymd_filtered = [s for s in pymd_syns if s.lower() in _all_known]
+                        syns = pymd_filtered if pymd_filtered else pymd_syns[:3]
+                    else:
+                        syns = pymd_syns[:3]
+
+            # 3. WordNet fallback (filtered to known academic vocabulary)
             if not syns and _NLTK_AVAILABLE and _all_known is not None:
                 wn_syns = _get_wordnet_synonyms(base, pos)
                 filtered = [s for s in wn_syns if s.lower() in _all_known]
@@ -876,12 +938,12 @@ def replace_synonyms(text: str, replacement_rate: float = 0.35) -> str:
     return " ".join(result)
 
 
-def deep_synonym_replace(text: str, replacement_rate: float = 0.55) -> str:
-    """Aggressive synonym replacement at a higher rate for maximum paraphrasing.
+def deep_synonym_replace(text: str, replacement_rate: float = 0.35) -> str:
+    """Synonym replacement at a higher rate for broader lexical variation.
 
-    Targets ~*replacement_rate* of ALL eligible content words.  Protected tokens
-    are preserved exactly.  Suitable for use after the core pipeline has already
-    run a lighter synonym pass.
+    Still uses the same meaning-safe priority order as :func:`replace_synonyms`
+    (built-in thesaurus → PyMultiDictionary → filtered WordNet), so meaning
+    is preserved even at the higher rate.  Protected tokens are never touched.
     """
     return replace_synonyms(text, replacement_rate=replacement_rate)
 
@@ -1028,26 +1090,74 @@ def inject_noise(text: str, density: float = 0.02) -> str:
 def humanize(text: str, config: dict = None) -> str:
     """
     Apply the full humanization pipeline to *text*.
-    *config* may contain:
-        synonym_rate (float)      – fraction of words replaced in the standard pass (default 0.35)
-        deep_synonym_rate (float) – fraction used in the deep pass (default 0.55)
-        enable_deep_synonyms (bool) – run an extra deep synonym pass (default True)
-        enable_burstiness (bool)
-        enable_cliches (bool)
-        enable_noise (bool)
+
+    The pipeline rewrites *style* while strictly preserving *meaning*:
+      1. AI-cliché neutralisation
+      2. POS-aware synonym replacement (built-in thesaurus + PyMultiDictionary)
+      3. Optional deep synonym pass at a higher rate (still meaning-safe)
+      4. Multi-language back-translation (EN→DE→FR→ES→EN) for phrase-level rewriting
+      5. Active-to-passive voice conversion on a fraction of sentences
+      6. Sentence-length burstiness balancing
+      7. Adverbial placement shifting
+      8. Reporting verb diversification
+      9. Controlled low-density noise injection
+
+    Protected tokens (citations, quotes, equations, acronyms, legal terms, named
+    entities) are **never altered** at any stage.
+
+    *config* keys (all optional):
+        synonym_rate (float)           – standard synonym-pass rate (default 0.20)
+        deep_synonym_rate (float)      – deep-pass rate (default 0.35)
+        enable_deep_synonyms (bool)    – run deep synonym pass (default True)
+        enable_back_translation (bool) – run back-translation (default True)
+        back_translation_languages (list) – pivot chain (default ['de','fr','es'])
+        enable_active_to_passive (bool) – convert some active sentences (default True)
+        passive_rate (float)           – fraction of sentences converted (default 0.25)
+        enable_noise (bool)            – inject minor stylistic noise (default True)
     """
     if config is None:
         config = {}
 
+    # Step 1: Replace AI clichés with natural academic alternatives
     text = neutralize_cliches(text)
-    text = replace_synonyms(text, replacement_rate=config.get("synonym_rate", 0.35))
-    # Extra deep pass for maximum word-level variation
+
+    # Step 2: POS-aware meaning-safe synonym replacement
+    text = replace_synonyms(text, replacement_rate=config.get("synonym_rate", 0.20))
+
+    # Step 3: Optional deep synonym pass
     if config.get("enable_deep_synonyms", True):
-        text = deep_synonym_replace(text, replacement_rate=config.get("deep_synonym_rate", 0.55))
+        text = deep_synonym_replace(text, replacement_rate=config.get("deep_synonym_rate", 0.35))
+
+    # Step 4: Multi-language back-translation for phrase-level paraphrasing
+    if config.get("enable_back_translation", True):
+        try:
+            from core.transformer import back_translate
+            pivot_langs = config.get("back_translation_languages", ["de", "fr", "es"])
+            text = back_translate(text, pivot_languages=pivot_langs)
+        except Exception as exc:
+            warnings.warn(f"Back-translation in humanizer failed: {exc}")
+
+    # Step 5: Active-to-passive voice conversion
+    if config.get("enable_active_to_passive", True):
+        try:
+            from core.transformer import convert_active_to_passive
+            text = convert_active_to_passive(
+                text, rate=config.get("passive_rate", 0.25)
+            )
+        except Exception as exc:
+            warnings.warn(f"Active-to-passive conversion in humanizer failed: {exc}")
+
+    # Step 6: Sentence-length burstiness balancing
     text = balance_burstiness(text)
+
+    # Step 7: Adverbial placement shifting
     text = shift_adverbials(text)
-    text = flip_passive_to_active(text)
+
+    # Step 8: Reporting verb diversification
     text = diversify_reporting_verbs(text)
+
+    # Step 9: Low-density noise injection
     if config.get("enable_noise", True):
         text = inject_noise(text)
+
     return text
