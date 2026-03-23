@@ -22,6 +22,10 @@ back_translation_languages:
 # Active-to-passive voice conversion
 enable_active_to_passive: true
 passive_rate: 0.25
+# T5/Pegasus sentence-level paraphraser (HuggingFace tuner007/pegasus_paraphrase)
+# Requires: pip install transformers torch
+# Falls back gracefully when not installed.
+enable_pegasus: true
 hedging_words:
   - suggests
   - tends to
@@ -35,3 +39,63 @@ ai_cliches:
   - comprehensive
   - moreover
   - furthermore
+# Technical terms that must NEVER be altered by synonym replacement.
+# Add field-specific terms relevant to your research.
+technical_terms_exceptions:
+  # Research methodology
+  - hypothesis
+  - methodology
+  - epistemology
+  - ontology
+  - hermeneutics
+  - phenomenology
+  - ethnography
+  - meta-analysis
+  - regression
+  - correlation
+  - variance
+  - deviation
+  - quantitative
+  - qualitative
+  - longitudinal
+  - cross-sectional
+  - randomized
+  - placebo
+  - cohort
+  - algorithm
+  - dataset
+  - neural
+  - taxonomy
+  - genome
+  - chromosome
+  - protein
+  - enzyme
+  - catalyst
+  - polymer
+  - entropy
+  - theorem
+  - lemma
+  - corollary
+  - eigenvalue
+  - matrix
+  - tensor
+  - gradient
+  - derivative
+  - integral
+  - logarithm
+  # Academic citation markers
+  - ibid
+  - et al
+  - op cit
+  - passim
+  # Common academic proper nouns (examples)
+  - Likert
+  - Bayesian
+  - Gaussian
+  - Poisson
+  - Markov
+  - Fourier
+  - Newton
+  - Einstein
+  - Darwin
+  - Freudian

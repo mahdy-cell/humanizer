@@ -80,10 +80,57 @@ except ImportError:
     _PYMULTIDICT_AVAILABLE = False
 
 try:
+    from PyDictionary import PyDictionary as _PyDict
+    _PYDICT_AVAILABLE = True
+    _PYDICT_INSTANCE: Optional[object] = None
+except ImportError:
+    _PYDICT_AVAILABLE = False
+    _PYDICT_INSTANCE = None
+
+# spacy-wordnet provides contextual WordNet synsets through spaCy pipelines.
+# It ensures synonyms are chosen based on the *context* of the sentence (e.g.
+# "bank" in a finance sentence will not be replaced with river-related terms).
+try:
+    import spacy as _spacy_wn_spacy
+    # Probe for the spacy_wordnet extension without crashing if absent
+    import importlib as _importlib
+    _spacy_wordnet_mod = _importlib.util.find_spec("spacy_wordnet")
+    if _spacy_wordnet_mod is not None:
+        from spacy_wordnet.wordnet_annotator import WordnetAnnotator as _WordnetAnnotator  # noqa: F401
+        _SPACY_WORDNET_AVAILABLE = True
+    else:
+        _SPACY_WORDNET_AVAILABLE = False
+except Exception:
+    _SPACY_WORDNET_AVAILABLE = False
+
+try:
     from textblob import TextBlob as _TextBlob
     _TEXTBLOB_AVAILABLE = True
 except ImportError:
     _TEXTBLOB_AVAILABLE = False
+
+# ── Technical-terms exceptions (loaded lazily from config/settings.yaml) ──
+# Words in this set are NEVER candidates for synonym replacement no matter
+# what.  The set is populated once on first call to replace_synonyms().
+_TECHNICAL_EXCEPTIONS: Optional[set] = None
+
+def _load_technical_exceptions() -> set:
+    """Return the set of technical terms that must never be altered."""
+    global _TECHNICAL_EXCEPTIONS
+    if _TECHNICAL_EXCEPTIONS is not None:
+        return _TECHNICAL_EXCEPTIONS
+    exc: set = set()
+    try:
+        import os, yaml
+        _cfg_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
+        with open(os.path.normpath(_cfg_path), "r", encoding="utf-8") as _f:
+            _cfg = yaml.safe_load(_f)
+        for term in (_cfg.get("technical_terms_exceptions") or []):
+            exc.add(str(term).lower())
+    except Exception:
+        pass
+    _TECHNICAL_EXCEPTIONS = exc
+    return exc
 # Each entry: word → list of synonyms with the same POS.
 # Format: { "word": ["syn1", "syn2", ...], ... }
 # POS categories are kept separate to allow targeted lookup.
@@ -763,6 +810,101 @@ def _get_pymd_synonyms(word: str) -> List[str]:
         return []
 
 
+# Cache for PyDictionary lookups
+_PYDICT_CACHE: Dict[str, List[str]] = {}
+
+
+def _get_pydictionary_synonyms(word: str) -> List[str]:
+    """Return synonyms from PyDictionary (lightweight online dictionary).
+
+    PyDictionary queries an online thesaurus and returns synonyms and antonyms.
+    Results are cached per word.  Returns an empty list when PyDictionary is
+    unavailable, the network is unreachable, or the lookup fails.
+    """
+    if not _PYDICT_AVAILABLE:
+        return []
+    global _PYDICT_INSTANCE
+    key = word.lower()
+    if key in _PYDICT_CACHE:
+        return _PYDICT_CACHE[key]
+    try:
+        if _PYDICT_INSTANCE is None:
+            _PYDICT_INSTANCE = _PyDict([key])
+        else:
+            _PYDICT_INSTANCE = _PyDict([key])
+        result = _PYDICT_INSTANCE.getSynonyms()
+        syns: List[str] = []
+        if result and isinstance(result, list) and result[0]:
+            for item in result[0].get(key, []):
+                if isinstance(item, str) and item.lower() != key and " " not in item and len(item) > 2:
+                    syns.append(item)
+        _PYDICT_CACHE[key] = syns
+        return syns
+    except Exception:
+        _PYDICT_CACHE[key] = []
+        return []
+
+
+# spacy-wordnet NLP pipeline (loaded lazily, separate from the voice-flip NLP)
+_SPACY_WN_NLP = None
+_SPACY_WN_NLP_LOADING = False
+
+
+def _get_spacy_wn_nlp():
+    """Return a spaCy NLP pipeline with the spacy_wordnet pipe attached."""
+    global _SPACY_WN_NLP, _SPACY_WN_NLP_LOADING
+    if _SPACY_WN_NLP is not None:
+        return _SPACY_WN_NLP
+    if _SPACY_WN_NLP_LOADING or not (_SPACY_WORDNET_AVAILABLE and _SPACY_AVAILABLE):
+        return None
+    _SPACY_WN_NLP_LOADING = True
+    try:
+        import spacy as _sp
+        _nlp = _sp.load("en_core_web_sm")
+        if "spacy_wordnet" not in _nlp.pipe_names:
+            _nlp.add_pipe("spacy_wordnet", after="tagger", config={"lang": _nlp.lang})
+        _SPACY_WN_NLP = _nlp
+    except Exception as exc:
+        warnings.warn(f"spacy-wordnet pipeline load failed: {exc}")
+    finally:
+        _SPACY_WN_NLP_LOADING = False
+    return _SPACY_WN_NLP
+
+
+def _get_spacy_wordnet_synonyms(word: str, context_sentence: str = "") -> List[str]:
+    """Return contextually-appropriate synonyms using spacy-wordnet.
+
+    Unlike raw WordNet, spacy-wordnet analyses the *context* of the word in its
+    sentence and selects only synsets that match the detected sense.  This
+    prevents absurd replacements such as substituting 'bank' (financial) with
+    river-bank synonyms.
+
+    Falls back to an empty list when spacy-wordnet is unavailable.
+    """
+    if not _SPACY_WORDNET_AVAILABLE:
+        return []
+    nlp = _get_spacy_wn_nlp()
+    if nlp is None:
+        return []
+    try:
+        text_to_parse = context_sentence.strip() if context_sentence.strip() else word
+        doc = nlp(text_to_parse)
+        synonyms: set = set()
+        for token in doc:
+            if token.text.lower() == word.lower() or token.lemma_.lower() == word.lower():
+                try:
+                    for synset in (token._.wordnet.synsets() or [])[:4]:
+                        for lemma in synset.lemmas():
+                            name = lemma.name().replace("_", " ")
+                            if name.lower() != word.lower() and " " not in name and len(name) > 2:
+                                synonyms.add(name.lower())
+                except Exception:
+                    pass
+        return list(synonyms)
+    except Exception:
+        return []
+
+
 def _lemmatise_for_lookup(word: str, pos: str = "") -> str:
     """Strip common English inflections to obtain the base form for thesaurus lookup.
 
@@ -833,15 +975,32 @@ def replace_synonyms(text: str, replacement_rate: float = 0.20) -> str:
 
     Priority order for synonym sources:
       1. Built-in curated academic thesaurus (highest quality, no network needed)
-      2. PyMultiDictionary (cross-language dictionary — verified meanings)
-      3. WordNet filtered to known academic vocabulary (supplemental only)
+      2. spacy-wordnet (contextual synsets — prevents sense-ambiguous replacements)
+      3. PyMultiDictionary (cross-language dictionary — verified meanings)
+      4. PyDictionary (online thesaurus — additional coverage)
+      5. WordNet filtered to known academic vocabulary (supplemental only)
 
+    Technical terms listed in ``config/settings.yaml`` under
+    ``technical_terms_exceptions`` are **never** candidates for replacement.
     Protected tokens (``[REF_n]``, ``[QUOTE_n]``, etc.) are never touched.
     Capitalisation and basic inflections (-s/-es/-ed/-ing) are preserved.
     Only words with ≥ 4 characters are candidates for replacement.
     """
+    # Load technical-terms exceptions (cached after first call)
+    tech_exceptions = _load_technical_exceptions()
+
     # Build word → POS map from NLTK (if available)
     pos_map = _build_pos_map(text)
+
+    # Split text into sentences for context-aware (spacy-wordnet) lookup
+    sentences = re.split(r'(?<=[.!?])\s+', text)
+    # Map each token position to its source sentence (for contextual lookup)
+    word_to_sentence: Dict[int, str] = {}
+    _idx = 0
+    for sent in sentences:
+        for w in sent.split():
+            word_to_sentence[_idx] = sent
+            _idx += 1
 
     # Pre-compute all known synonym values for WordNet cross-check
     _all_known: Optional[set] = None
@@ -854,7 +1013,7 @@ def replace_synonyms(text: str, replacement_rate: float = 0.20) -> str:
     tokens = text.split()
     result: List[str] = []
 
-    for word in tokens:
+    for token_idx, word in enumerate(tokens):
         # Never touch protection tokens
         if _PROTECT_RE.match(word):
             result.append(word)
@@ -865,16 +1024,37 @@ def replace_synonyms(text: str, replacement_rate: float = 0.20) -> str:
         leading_punct = re.match(r'^([^a-zA-Z]*)', word).group(1)
         trailing_punct = re.search(r'([^a-zA-Z]*)$', word).group(1)
 
+        # Skip technical terms that must not be altered
+        if clean.lower() in tech_exceptions:
+            result.append(word)
+            continue
+
         if len(clean) > 3 and random.random() < replacement_rate:
             pos = pos_map.get(clean.lower(), "")
             base = _lemmatise_for_lookup(clean, pos)
+
+            # Skip if base form is also a protected technical term
+            if base.lower() in tech_exceptions:
+                result.append(word)
+                continue
 
             # 1. Built-in thesaurus first (curated, academically appropriate)
             syns = _get_builtin_synonyms(base, pos)
             if not syns and base != clean.lower():
                 syns = _get_builtin_synonyms(clean.lower(), pos)
 
-            # 2. PyMultiDictionary (verified cross-language synonyms)
+            # 2. spacy-wordnet contextual synonyms (sense-disambiguated)
+            if not syns and _SPACY_WORDNET_AVAILABLE:
+                context_sent = word_to_sentence.get(token_idx, "")
+                spwn_syns = _get_spacy_wordnet_synonyms(base, context_sent)
+                if spwn_syns:
+                    if _all_known:
+                        spwn_filtered = [s for s in spwn_syns if s.lower() in _all_known]
+                        syns = spwn_filtered if spwn_filtered else spwn_syns[:3]
+                    else:
+                        syns = spwn_syns[:3]
+
+            # 3. PyMultiDictionary (verified cross-language synonyms)
             if not syns:
                 pymd_syns = _get_pymd_synonyms(base)
                 if pymd_syns:
@@ -884,11 +1064,25 @@ def replace_synonyms(text: str, replacement_rate: float = 0.20) -> str:
                     else:
                         syns = pymd_syns[:3]
 
-            # 3. WordNet fallback (filtered to known academic vocabulary)
+            # 4. PyDictionary (online thesaurus — additional coverage)
+            if not syns:
+                pd_syns = _get_pydictionary_synonyms(base)
+                if pd_syns:
+                    if _all_known:
+                        pd_filtered = [s for s in pd_syns if s.lower() in _all_known]
+                        syns = pd_filtered if pd_filtered else pd_syns[:3]
+                    else:
+                        syns = pd_syns[:3]
+
+            # 5. WordNet fallback (filtered to known academic vocabulary)
             if not syns and _NLTK_AVAILABLE and _all_known is not None:
                 wn_syns = _get_wordnet_synonyms(base, pos)
                 filtered = [s for s in wn_syns if s.lower() in _all_known]
                 syns = filtered
+
+            # Final guard: never pick a technical-exception word as a replacement
+            if syns:
+                syns = [s for s in syns if s.lower() not in tech_exceptions]
 
             if syns:
                 # Prefer single-word synonyms
@@ -941,9 +1135,10 @@ def replace_synonyms(text: str, replacement_rate: float = 0.20) -> str:
 def deep_synonym_replace(text: str, replacement_rate: float = 0.35) -> str:
     """Synonym replacement at a higher rate for broader lexical variation.
 
-    Still uses the same meaning-safe priority order as :func:`replace_synonyms`
-    (built-in thesaurus → PyMultiDictionary → filtered WordNet), so meaning
-    is preserved even at the higher rate.  Protected tokens are never touched.
+    Uses the same meaning-safe priority order as :func:`replace_synonyms`
+    (built-in thesaurus → spacy-wordnet → PyMultiDictionary → PyDictionary →
+    filtered WordNet), so meaning is preserved even at the higher rate.
+    Protected tokens and technical-exception terms are never touched.
     """
     return replace_synonyms(text, replacement_rate=replacement_rate)
 
@@ -1103,7 +1298,9 @@ def humanize(text: str, config: dict = None) -> str:
       9. Controlled low-density noise injection
 
     Protected tokens (citations, quotes, equations, acronyms, legal terms, named
-    entities) are **never altered** at any stage.
+    entities) are **never altered** at any stage.  Technical terms listed in
+    ``config/settings.yaml`` under ``technical_terms_exceptions`` are also
+    preserved throughout the synonym-replacement passes.
 
     *config* keys (all optional):
         synonym_rate (float)           – standard synonym-pass rate (default 0.20)
@@ -1113,6 +1310,7 @@ def humanize(text: str, config: dict = None) -> str:
         back_translation_languages (list) – pivot chain (default ['de','fr','es'])
         enable_active_to_passive (bool) – convert some active sentences (default True)
         passive_rate (float)           – fraction of sentences converted (default 0.25)
+        enable_pegasus (bool)          – run T5/Pegasus sentence paraphraser (default True)
         enable_noise (bool)            – inject minor stylistic noise (default True)
     """
     if config is None:
@@ -1122,6 +1320,8 @@ def humanize(text: str, config: dict = None) -> str:
     text = neutralize_cliches(text)
 
     # Step 2: POS-aware meaning-safe synonym replacement
+    # (built-in thesaurus → spacy-wordnet → PyMultiDictionary → PyDictionary → WordNet)
+    # Technical terms from settings.yaml are never altered.
     text = replace_synonyms(text, replacement_rate=config.get("synonym_rate", 0.20))
 
     # Step 3: Optional deep synonym pass
@@ -1136,6 +1336,14 @@ def humanize(text: str, config: dict = None) -> str:
             text = back_translate(text, pivot_languages=pivot_langs)
         except Exception as exc:
             warnings.warn(f"Back-translation in humanizer failed: {exc}")
+
+    # Step 4b: T5/Pegasus sentence-level paraphrasing (complete sentence reconstruction)
+    if config.get("enable_pegasus", True):
+        try:
+            from core.transformer import t5_pegasus_paraphrase
+            text = t5_pegasus_paraphrase(text)
+        except Exception as exc:
+            warnings.warn(f"T5/Pegasus paraphrase in humanizer failed: {exc}")
 
     # Step 5: Active-to-passive voice conversion
     if config.get("enable_active_to_passive", True):

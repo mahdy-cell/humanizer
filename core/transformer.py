@@ -50,6 +50,24 @@ except ImportError:
     _PARROT_AVAILABLE = False
     warnings.warn("parrot-paraphraser not available; parrot paraphrase disabled.")
 
+# T5/Pegasus paraphraser (HuggingFace Transformers).
+# Uses tuner007/pegasus_paraphrase — a Pegasus model fine-tuned on paraphrase
+# pairs.  Falls back gracefully when transformers / torch are not installed.
+try:
+    from transformers import (
+        PegasusForConditionalGeneration as _PegasusModel,
+        PegasusTokenizer as _PegasusTokenizer,
+    )
+    import torch as _torch
+    _PEGASUS_AVAILABLE = True
+    _PEGASUS_MODEL = None
+    _PEGASUS_TOKENIZER = None
+    _PEGASUS_MODEL_NAME = "tuner007/pegasus_paraphrase"
+except ImportError:
+    _PEGASUS_AVAILABLE = False
+    _PEGASUS_MODEL = None
+    _PEGASUS_TOKENIZER = None
+
 # ── Protection-token pattern (must survive translation intact) ─────────────
 _PROTECT_RE = re.compile(r'\[(?:REF|QUOTE|EQ|NE|ACR|LEGAL)_\d+\]')
 
@@ -105,6 +123,84 @@ def parrot_paraphrase(text: str) -> str:
         return " ".join(results)
     except Exception as exc:
         warnings.warn(f"Parrot paraphrase failed: {exc}")
+        return text
+
+
+# ── T5 / Pegasus paraphraser ────────────────────────────────────────────────
+
+def _get_pegasus_model():
+    """Lazily load and cache the Pegasus paraphrase model + tokenizer."""
+    global _PEGASUS_MODEL, _PEGASUS_TOKENIZER
+    if _PEGASUS_MODEL is not None:
+        return _PEGASUS_MODEL, _PEGASUS_TOKENIZER
+    if not _PEGASUS_AVAILABLE:
+        return None, None
+    try:
+        _PEGASUS_TOKENIZER = _PegasusTokenizer.from_pretrained(_PEGASUS_MODEL_NAME)
+        _PEGASUS_MODEL = _PegasusModel.from_pretrained(_PEGASUS_MODEL_NAME)
+        _PEGASUS_MODEL.eval()
+    except Exception as exc:
+        warnings.warn(f"Pegasus model load failed: {exc}")
+        _PEGASUS_MODEL = None
+        _PEGASUS_TOKENIZER = None
+    return _PEGASUS_MODEL, _PEGASUS_TOKENIZER
+
+
+def t5_pegasus_paraphrase(
+    text: str,
+    num_beams: int = 5,
+    num_return_sequences: int = 1,
+    max_length: int = 128,
+) -> str:
+    """Paraphrase *text* using the tuner007/pegasus_paraphrase model.
+
+    This is a sentence-level structural paraphraser — it can completely
+    reconstruct sentences rather than merely swapping individual words.
+    Unlike Parrot, it does not require special library wrappers, working
+    directly through the standard HuggingFace ``transformers`` API.
+
+    Protected tokens (``[REF_n]``, ``[QUOTE_n]``, etc.) are extracted before
+    the model runs and restored losslessly afterwards.
+
+    Falls back to the original *text* when:
+      - ``transformers`` / ``torch`` are not installed
+      - The model fails to download or generate output
+    """
+    if not _PEGASUS_AVAILABLE:
+        return text
+    model, tokenizer = _get_pegasus_model()
+    if model is None or tokenizer is None:
+        return text
+    try:
+        sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+        results: List[str] = []
+        for sent in sentences:
+            # Skip sentences that contain protection tokens (never restructure them)
+            if _PROTECT_RE.search(sent):
+                results.append(sent)
+                continue
+            try:
+                inputs = tokenizer(
+                    [sent],
+                    truncation=True,
+                    padding="longest",
+                    max_length=max_length,
+                    return_tensors="pt",
+                )
+                with _torch.no_grad():
+                    outputs = model.generate(
+                        **inputs,
+                        num_beams=num_beams,
+                        num_return_sequences=num_return_sequences,
+                        max_length=max_length,
+                    )
+                decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+                results.append(decoded[0] if decoded else sent)
+            except Exception:
+                results.append(sent)
+        return " ".join(results)
+    except Exception as exc:
+        warnings.warn(f"T5/Pegasus paraphrase failed: {exc}")
         return text
 
 
@@ -547,6 +643,7 @@ def dependency_reconstruct(text: str) -> str:
 def transform(
     text: str,
     use_parrot: bool = True,
+    use_pegasus: bool = True,
     use_back_translation: bool = True,
     use_dependency: bool = True,
     use_active_to_passive: bool = True,
@@ -561,6 +658,7 @@ def transform(
     Parameters:
         text: input text (with protection tokens intact)
         use_parrot: whether to apply Parrot paraphrasing
+        use_pegasus: whether to apply T5/Pegasus sentence-level paraphrasing
         use_back_translation: whether to apply back-translation
         use_dependency: whether to apply dependency reconstruction
         use_active_to_passive: whether to convert some active sentences to passive
@@ -568,10 +666,20 @@ def transform(
         pivot_languages: languages for back-translation chain (default: ['de','fr','es'])
         passive_rate: fraction of eligible sentences to convert to passive (0–1)
         structural_rate: fraction of sentences to structurally paraphrase (0–1)
+
+    Paraphrase priority:
+        1. T5/Pegasus (complete sentence reconstruction, most natural output)
+        2. Parrot (T5-based, falls back to Pegasus output when Pegasus succeeds)
+        3. Back-translation (phrase-level rephrasing via pivot languages)
+        4. Structural paraphrase (prepositional fronting, transition injection)
+        5. Dependency reconstruction (spaCy tree rewriting)
     """
     if use_back_translation:
         text = back_translate(text, pivot_languages)
-    if use_parrot:
+    # Prefer Pegasus for sentence-level reconstruction; use Parrot as fallback
+    if use_pegasus and _PEGASUS_AVAILABLE:
+        text = t5_pegasus_paraphrase(text)
+    elif use_parrot:
         text = parrot_paraphrase(text)
     if use_active_to_passive:
         text = convert_active_to_passive(text, rate=passive_rate)
