@@ -1,0 +1,101 @@
+citation_style: APA7
+language: english
+processing_mode: full
+domain_terms: []
+author_name: ""
+university_name: ""
+margins_cm: 2.54
+font_name: Times New Roman
+font_size: 12
+line_spacing: 2.0
+self_test_threshold: 0.05
+# Synonym replacement — lower rates preserve meaning while varying style
+synonym_rate: 0.20
+deep_synonym_rate: 0.35
+enable_deep_synonyms: true
+# Back-translation: EN → DE → FR → ES → EN for phrase-level rewriting
+enable_back_translation: true
+back_translation_languages:
+  - de
+  - fr
+  - es
+# Active-to-passive voice conversion
+enable_active_to_passive: true
+passive_rate: 0.25
+# T5/Pegasus sentence-level paraphraser (HuggingFace tuner007/pegasus_paraphrase)
+# Requires: pip install transformers torch
+# Falls back gracefully when not installed.
+enable_pegasus: true
+hedging_words:
+  - suggests
+  - tends to
+  - predominantly
+  - appears to
+  - may indicate
+ai_cliches:
+  - at the end of the day
+  - in the digital age
+  - transformative
+  - comprehensive
+  - moreover
+  - furthermore
+# Technical terms that must NEVER be altered by synonym replacement.
+# Add field-specific terms relevant to your research.
+technical_terms_exceptions:
+  # Research methodology
+  - hypothesis
+  - methodology
+  - epistemology
+  - ontology
+  - hermeneutics
+  - phenomenology
+  - ethnography
+  - meta-analysis
+  - regression
+  - correlation
+  - variance
+  - deviation
+  - quantitative
+  - qualitative
+  - longitudinal
+  - cross-sectional
+  - randomized
+  - placebo
+  - cohort
+  - algorithm
+  - dataset
+  - neural
+  - taxonomy
+  - genome
+  - chromosome
+  - protein
+  - enzyme
+  - catalyst
+  - polymer
+  - entropy
+  - theorem
+  - lemma
+  - corollary
+  - eigenvalue
+  - matrix
+  - tensor
+  - gradient
+  - derivative
+  - integral
+  - logarithm
+  # Academic citation markers
+  - ibid
+  - et al
+  - op cit
+  - passim
+  # Common academic proper nouns (examples)
+  - Likert
+  - Bayesian
+  - Gaussian
+  - Poisson
+  - Markov
+  - Fourier
+  - Newton
+  - Einstein
+  - Darwin
+  - Freudian
