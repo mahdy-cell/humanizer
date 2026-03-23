@@ -9,9 +9,9 @@ font_name: Times New Roman
 font_size: 12
 line_spacing: 2.0
 self_test_threshold: 0.05
-# Synonym replacement — lower rates preserve meaning while varying style
-synonym_rate: 0.20
-deep_synonym_rate: 0.35
+# Synonym replacement — high rates maximise lexical divergence from original
+synonym_rate: 0.90
+deep_synonym_rate: 0.95
 enable_deep_synonyms: true
 # Back-translation: EN → DE → FR → ES → EN for phrase-level rewriting
 enable_back_translation: true
@@ -21,7 +21,7 @@ back_translation_languages:
   - es
 # Active-to-passive voice conversion
 enable_active_to_passive: true
-passive_rate: 0.25
+passive_rate: 0.60
 # T5/Pegasus sentence-level paraphraser (HuggingFace tuner007/pegasus_paraphrase)
 # Requires: pip install transformers torch
 # Falls back gracefully when not installed.

@@ -683,6 +683,142 @@ _POS_TO_THESAURUS: Dict[str, Dict[str, List[str]]] = {
 # Protection-token pattern (must survive all substitutions intact)
 _PROTECT_RE = re.compile(r'\[(?:REF|QUOTE|EQ|NE|ACR|LEGAL)_\d+\]')
 
+# ── Academic phrase substitutions ─────────────────────────────────────────
+# Each entry: (regex_pattern, [replacement_alternatives])
+# Applied before word-level synonym replacement so that multi-word structural
+# phrases are handled holistically.  Only one alternative is chosen at random
+# per match.  Single-word connectors (Furthermore, Moreover, etc.) are NOT
+# included here — they are handled by word-level _ADV_SYNONYMS to avoid
+# double-substitution artefacts.
+_ACADEMIC_PHRASE_SUBSTITUTIONS: List[Tuple[str, List[str]]] = [
+    # ── Study/research reference openers ──────────────────────────────────
+    (r'\bThe study by\b',          ["Research conducted by", "The investigation by",
+                                    "Work undertaken by", "The inquiry of",
+                                    "The examination by", "Findings from",
+                                    "The analysis by"]),
+    (r'\bthe study by\b',          ["research conducted by", "the investigation by",
+                                    "work undertaken by", "the inquiry of",
+                                    "the examination by", "findings from",
+                                    "the analysis by"]),
+    (r'\bThe research by\b',       ["The investigation by", "Work undertaken by",
+                                    "The analysis by", "The inquiry by",
+                                    "The examination by"]),
+    (r'\bthe research by\b',       ["the investigation by", "work undertaken by",
+                                    "the analysis by", "the inquiry by",
+                                    "the examination by"]),
+    (r'\bThis study\b',            ["This investigation", "The present inquiry",
+                                    "This examination", "The current analysis",
+                                    "This scholarly work"]),
+    (r'\bthis study\b',            ["this investigation", "the present inquiry",
+                                    "this examination", "the current analysis",
+                                    "this scholarly work"]),
+    (r'\bThis research\b',         ["This investigation", "The present inquiry",
+                                    "This examination", "The current work",
+                                    "This scholarly effort"]),
+    (r'\bthis research\b',         ["this investigation", "the present inquiry",
+                                    "this examination", "the current work",
+                                    "this scholarly effort"]),
+    # ── Agreement / consensus ─────────────────────────────────────────────
+    (r'\bagreed on\b',             ["reached consensus on", "concurred regarding",
+                                    "converged on", "were aligned on",
+                                    "affirmed"]),
+    (r'\bagreed that\b',           ["concurred that", "reached consensus that",
+                                    "were in agreement that", "held that",
+                                    "affirmed that"]),
+    (r'\bagreed with\b',           ["concurred with", "were in accord with",
+                                    "aligned with", "were consistent with"]),
+    # ── Definitional phrases ──────────────────────────────────────────────
+    (r'\bis defined as\b',         ["is characterised as", "is conceptualised as",
+                                    "is described as", "refers to",
+                                    "is understood as", "is construed as"]),
+    (r'\bcan be defined as\b',     ["may be characterised as", "is conceptualised as",
+                                    "may be described as", "is understood as"]),
+    # ── Necessity / importance ────────────────────────────────────────────
+    (r'\bfundamental necessity\b', ["essential requirement", "critical imperative",
+                                    "core prerequisite", "indispensable need",
+                                    "vital prerequisite"]),
+    (r'\bfundamental importance\b',["critical significance", "central relevance",
+                                    "pivotal importance", "overriding consequence"]),
+    (r'\bplays? a (?:key|critical|crucial|central|significant|fundamental|vital|major|important|pivotal|essential) role\b',
+                                   ["fulfils a central function", "occupies a pivotal position",
+                                    "serves a critical purpose", "assumes a vital role",
+                                    "holds a crucial function"]),
+    # ── Relational phrases ────────────────────────────────────────────────
+    (r'\bin line with\b',          ["consistent with", "in accordance with",
+                                    "aligned with", "congruent with",
+                                    "in conformity with"]),
+    (r'\bIn line with\b',          ["Consistent with", "In accordance with",
+                                    "Aligned with", "Congruent with",
+                                    "In conformity with"]),
+    (r'\bwith regard to\b',        ["with respect to", "pertaining to",
+                                    "in relation to", "as regards", "in terms of"]),
+    (r'\bWith regard to\b',        ["With respect to", "Pertaining to",
+                                    "In relation to", "As regards", "In terms of"]),
+    (r'\bin the context of\b',     ["within the framework of", "in the domain of",
+                                    "in the setting of", "against the backdrop of",
+                                    "within the scope of"]),
+    (r'\bIn the context of\b',     ["Within the framework of", "In the domain of",
+                                    "In the setting of", "Against the backdrop of",
+                                    "Within the scope of"]),
+    (r'\bat the same time\b',      ["simultaneously", "concurrently", "in parallel",
+                                    "correspondingly", "in tandem"]),
+    (r'\bpointed out\b',           ["highlighted", "underscored", "drew attention to",
+                                    "brought to light", "identified"]),
+    (r'\bin other words\b',        ["that is to say", "to put it differently",
+                                    "stated otherwise", "in plainer terms"]),
+    # ── Epistemic / hedging ───────────────────────────────────────────────
+    (r'\bit is worth noting that\b', ["it should be observed that",
+                                      "it bears noting that",
+                                      "it merits attention that",
+                                      "it is important to recognise that"]),
+    (r'\bit should be noted that\b', ["it is notable that",
+                                      "it is worth observing that",
+                                      "it bears emphasis that",
+                                      "it is pertinent to acknowledge that"]),
+    (r'\bit can be argued that\b', ["one may contend that", "it is arguable that",
+                                    "there is ground to suggest that",
+                                    "one may posit that"]),
+    (r'\bit is important to\b',    ["it is essential to", "it is necessary to",
+                                    "it is imperative to", "it remains critical to"]),
+    (r'\bit is clear that\b',      ["it is evident that", "it is apparent that",
+                                    "it is manifest that", "the evidence shows that"]),
+    # ── Common verbal patterns ────────────────────────────────────────────
+    (r'\bshowed that\b',           ["demonstrated that", "established that",
+                                    "revealed that", "evidenced that",
+                                    "indicated that", "confirmed that"]),
+    (r'\bfound that\b',            ["determined that", "established that",
+                                    "ascertained that", "discovered that",
+                                    "observed that"]),
+    (r'\bin order to\b',           ["so as to", "with the aim of",
+                                    "with a view to", "for the purpose of",
+                                    "with the intention of"]),
+    (r'\bdue to the fact that\b',  ["because", "given that", "since",
+                                    "in light of the fact that",
+                                    "as a consequence of"]),
+    (r'\ba number of\b',           ["several", "numerous", "various",
+                                    "a range of", "multiple", "an array of"]),
+    (r'\bA number of\b',           ["Several", "Numerous", "Various",
+                                    "A range of", "Multiple", "An array of"]),
+    (r'\btakes place\b',           ["occurs", "transpires", "unfolds",
+                                    "is carried out", "comes about"]),
+    (r'\bcarried out\b',           ["conducted", "executed", "performed",
+                                    "undertaken", "accomplished"]),
+    (r'\bconsists of\b',           ["comprises", "is composed of", "encompasses",
+                                    "is made up of", "incorporates"]),
+    (r'\bfocuses on\b',            ["concentrates on", "centres on", "addresses",
+                                    "targets", "directs attention to"]),
+    (r'\bFocuses on\b',            ["Concentrates on", "Centres on", "Addresses",
+                                    "Targets", "Directs attention to"]),
+    (r'\baims to\b',               ["seeks to", "endeavours to", "aspires to",
+                                    "is designed to", "intends to"]),
+    (r'\bAims to\b',               ["Seeks to", "Endeavours to", "Aspires to",
+                                    "Is designed to", "Intends to"]),
+    (r'\bas well as\b',            ["in addition to", "alongside", "together with",
+                                    "in conjunction with", "combined with"]),
+    (r'\bin terms of\b',           ["with respect to", "regarding",
+                                    "as regards", "pertaining to"]),
+]
+
 # ── AI clichés and replacements ────────────────────────────────────────────
 AI_CLICHES: Dict[str, str] = {
     "at the end of the day": "ultimately",
@@ -759,13 +895,21 @@ def _get_wordnet_synonyms(word: str, pos: str = None) -> List[str]:
 
 
 def _get_builtin_synonyms(word: str, pos_tag: str = None) -> List[str]:
-    """Look up *word* in the built-in thesaurus, using POS tag when provided."""
+    """Look up *word* in the built-in thesaurus, using POS tag when provided.
+
+    When *pos_tag* is given only the matching POS thesaurus is searched so that
+    a verb synonym is never returned for a noun slot (and vice-versa).  The
+    cross-POS fallback is kept only for the no-tag case.
+    """
     key = word.lower()
     if pos_tag:
         thesaurus = _POS_TO_THESAURUS.get(pos_tag, {})
         if key in thesaurus:
             return thesaurus[key]
-    # Fall back to scanning all dictionaries
+        # POS is known but word not in the matching thesaurus — return empty
+        # rather than falling back to a different POS to avoid wrong-class subs.
+        return []
+    # No POS tag available: scan all dictionaries as before
     for thesaurus in (_VERB_SYNONYMS, _NOUN_SYNONYMS, _ADJ_SYNONYMS, _ADV_SYNONYMS):
         if key in thesaurus:
             return thesaurus[key]
@@ -1004,11 +1148,20 @@ def replace_synonyms(text: str, replacement_rate: float = 0.20) -> str:
 
     # Pre-compute all known synonym values for WordNet cross-check
     _all_known: Optional[set] = None
+    # POS-specific sets to filter external sources (prevents verb used as noun etc.)
+    _known_by_pos: Dict[str, set] = {}
     if _NLTK_AVAILABLE:
         _all_known = set()
-        for d in (_NOUN_SYNONYMS, _VERB_SYNONYMS, _ADJ_SYNONYMS, _ADV_SYNONYMS):
-            for v in d.values():
-                _all_known.update(s.lower() for s in v)
+        _pos_dicts = [
+            ("NN", _NOUN_SYNONYMS), ("VB", _VERB_SYNONYMS),
+            ("JJ", _ADJ_SYNONYMS),  ("RB", _ADV_SYNONYMS),
+        ]
+        for _prefix, _d in _pos_dicts:
+            _s: set = set()
+            for v in _d.values():
+                _s.update(w.lower() for w in v)
+                _all_known.update(w.lower() for w in v)
+            _known_by_pos[_prefix] = _s
 
     tokens = text.split()
     result: List[str] = []
@@ -1048,9 +1201,11 @@ def replace_synonyms(text: str, replacement_rate: float = 0.20) -> str:
                 context_sent = word_to_sentence.get(token_idx, "")
                 spwn_syns = _get_spacy_wordnet_synonyms(base, context_sent)
                 if spwn_syns:
-                    if _all_known:
-                        spwn_filtered = [s for s in spwn_syns if s.lower() in _all_known]
-                        syns = spwn_filtered if spwn_filtered else spwn_syns[:3]
+                    pos_prefix = pos[:2] if pos else ""
+                    _pos_known = _known_by_pos.get(pos_prefix, _all_known or set())
+                    if _pos_known:
+                        spwn_filtered = [s for s in spwn_syns if s.lower() in _pos_known]
+                        syns = spwn_filtered if spwn_filtered else []
                     else:
                         syns = spwn_syns[:3]
 
@@ -1058,9 +1213,14 @@ def replace_synonyms(text: str, replacement_rate: float = 0.20) -> str:
             if not syns:
                 pymd_syns = _get_pymd_synonyms(base)
                 if pymd_syns:
-                    if _all_known:
+                    pos_prefix = pos[:2] if pos else ""
+                    _pos_known = _known_by_pos.get(pos_prefix, _all_known or set())
+                    if _pos_known:
+                        pymd_filtered = [s for s in pymd_syns if s.lower() in _pos_known]
+                        syns = pymd_filtered if pymd_filtered else []
+                    elif _all_known:
                         pymd_filtered = [s for s in pymd_syns if s.lower() in _all_known]
-                        syns = pymd_filtered if pymd_filtered else pymd_syns[:3]
+                        syns = pymd_filtered if pymd_filtered else []
                     else:
                         syns = pymd_syns[:3]
 
@@ -1068,16 +1228,23 @@ def replace_synonyms(text: str, replacement_rate: float = 0.20) -> str:
             if not syns:
                 pd_syns = _get_pydictionary_synonyms(base)
                 if pd_syns:
-                    if _all_known:
+                    pos_prefix = pos[:2] if pos else ""
+                    _pos_known = _known_by_pos.get(pos_prefix, _all_known or set())
+                    if _pos_known:
+                        pd_filtered = [s for s in pd_syns if s.lower() in _pos_known]
+                        syns = pd_filtered if pd_filtered else []
+                    elif _all_known:
                         pd_filtered = [s for s in pd_syns if s.lower() in _all_known]
-                        syns = pd_filtered if pd_filtered else pd_syns[:3]
+                        syns = pd_filtered if pd_filtered else []
                     else:
                         syns = pd_syns[:3]
 
-            # 5. WordNet fallback (filtered to known academic vocabulary)
+            # 5. WordNet fallback (filtered to POS-specific known academic vocabulary)
             if not syns and _NLTK_AVAILABLE and _all_known is not None:
                 wn_syns = _get_wordnet_synonyms(base, pos)
-                filtered = [s for s in wn_syns if s.lower() in _all_known]
+                pos_prefix = pos[:2] if pos else ""
+                _pos_known = _known_by_pos.get(pos_prefix, _all_known)
+                filtered = [s for s in wn_syns if s.lower() in _pos_known]
                 syns = filtered
 
             # Final guard: never pick a technical-exception word as a replacement
@@ -1146,8 +1313,19 @@ def deep_synonym_replace(text: str, replacement_rate: float = 0.35) -> str:
 # ── Burstiness balancing ───────────────────────────────────────────────────
 
 def _split_sentence(sentence: str) -> List[str]:
-    """Split a long sentence at 'and/but/which/that' conjunctions."""
-    parts = re.split(r'\b(?:and|but|which|that|although|however)\b', sentence, maxsplit=1)
+    """Split a long sentence at strong, safe clause boundaries.
+
+    Only splits at ', which', ', although', and ', however' — points that
+    unambiguously introduce a new subordinate or coordinate clause and whose
+    removal does not break the grammar of the preceding clause.  More
+    aggressive splits (e.g. on 'and', 'that') are avoided because they
+    frequently consume a necessary conjunction and produce incomplete sentences.
+    """
+    parts = re.split(
+        r',\s*\b(?:which|although|however)\b',
+        sentence,
+        maxsplit=1,
+    )
     return [p.strip() for p in parts if p.strip()]
 
 
@@ -1175,7 +1353,7 @@ def balance_burstiness(text: str, target_std: float = 8.0) -> str:
             merged = sent.rstrip(".!?") + ", " + sentences[i + 1][0].lower() + sentences[i + 1][1:]
             result.append(merged)
             i += 2
-        elif word_count > 45:
+        elif word_count > 70:
             # Split long sentence
             parts = _split_sentence(sent)
             result.extend(parts if len(parts) > 1 else [sent])
@@ -1190,9 +1368,14 @@ def balance_burstiness(text: str, target_std: float = 8.0) -> str:
 # ── Cliché neutralization ──────────────────────────────────────────────────
 
 def neutralize_cliches(text: str) -> str:
-    """Replace known AI clichés with academic alternatives."""
+    """Replace known AI clichés with academic alternatives, preserving sentence-initial capitalisation."""
     for cliche, replacement in AI_CLICHES.items():
-        text = re.sub(re.escape(cliche), replacement, text, flags=re.IGNORECASE)
+        def _rep(m: re.Match, r: str = replacement) -> str:
+            orig = m.group(0)
+            if orig and orig[0].isupper():
+                return r[0].upper() + r[1:] if r else r
+            return r
+        text = re.sub(re.escape(cliche), _rep, text, flags=re.IGNORECASE)
     return text
 
 
@@ -1280,6 +1463,115 @@ def inject_noise(text: str, density: float = 0.02) -> str:
     return " ".join(result)
 
 
+# ── Phrase-level substitution ─────────────────────────────────────────────
+
+def substitute_academic_phrases(text: str) -> str:
+    """Replace common multi-word academic phrases with varied alternatives.
+
+    Works through *_ACADEMIC_PHRASE_SUBSTITUTIONS* in order.  Each pattern is
+    applied to the full text and, when a match is found, a random alternative is
+    chosen.  Protected tokens are never touched.
+
+    This runs *before* word-level synonym replacement so that full phrases are
+    treated holistically rather than word-by-word.  A final cleanup pass removes
+    any doubled punctuation that could arise from phrase boundary changes.
+    """
+    for pattern, alternatives in _ACADEMIC_PHRASE_SUBSTITUTIONS:
+        def _pick(m: re.Match, alts: List[str] = alternatives) -> str:
+            if _PROTECT_RE.search(m.group(0)):
+                return m.group(0)
+            return random.choice(alts)
+        text = re.sub(pattern, _pick, text)
+    # Clean up any doubled punctuation left by phrase boundary changes
+    text = re.sub(r',\s*,+', ',', text)
+    text = re.sub(r'([.!?])\s*[,;]', r'\1', text)
+    return text
+
+
+# ── Sentence structural rewriting ─────────────────────────────────────────
+
+# Patterns that match a sentence opener followed by its content, allowing us
+# to restructure "(Introductory adverb/clause), main clause."
+_OPENER_TRANSFORMATIONS: List[Tuple[str, str]] = [
+    # "According to X, Y." → "Y, according to X."
+    (r'^(According to [^,]+),\s+(.+)$', r'\2, \1'),
+    # "In this study, X." → "X in this study."
+    (r'^(In this (?:study|research|investigation|work)),\s+(.+)$', r'\2 \1'),
+    # "As noted by X, Y." → "Y, as noted by X."
+    (r'^(As (?:noted|argued|shown|demonstrated|indicated) by [^,]+),\s+(.+)$', r'\2, \1'),
+]
+
+# Discourse markers to prepend to transformed sentences for variety
+_DISCOURSE_OPENERS: List[str] = [
+    "Notably,", "Evidently,", "Importantly,", "Correspondingly,",
+    "In parallel,", "Equally,", "By extension,", "On this basis,",
+    "To that end,", "As such,", "In light of this,", "To this effect,",
+]
+
+
+def rewrite_sentence_structure(text: str, rate: float = 0.30) -> str:
+    """Structurally rearrange a fraction of sentences for greater variety.
+
+    Applies simple clause-inversion and fronting rules at *rate* probability per
+    sentence.  Sentences containing protected tokens are left unchanged.
+    """
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+    result: List[str] = []
+    for sent in sentences:
+        if _PROTECT_RE.search(sent) or random.random() >= rate:
+            result.append(sent)
+            continue
+        rewritten = sent
+        for pat, repl in _OPENER_TRANSFORMATIONS:
+            m = re.match(pat, sent, re.IGNORECASE)
+            if m:
+                rewritten = re.sub(pat, repl, sent, flags=re.IGNORECASE)
+                break
+        result.append(rewritten)
+    return " ".join(result)
+
+
+def diversify_sentence_openers(text: str, rate: float = 0.25) -> str:
+    """Prepend varied discourse markers to a fraction of sentences.
+
+    Sentences that already start with a known connector, contain protected
+    tokens, or begin with a single word immediately followed by a comma
+    (indicating a sentence-level adverb/connector) are skipped.  Each chosen
+    marker is removed from *_DISCOURSE_OPENERS* for subsequent calls within the
+    same text to avoid repetition.
+    """
+    _CONNECTOR_RE = re.compile(
+        r'^(?:However|Nevertheless|Notwithstanding|Furthermore|Moreover|Additionally|'
+        r'Consequently|Therefore|Thus|Hence|Accordingly|Specifically|In particular|'
+        r'In addition|By contrast|Conversely|Notably|Evidently|Importantly|'
+        r'Correspondingly|In parallel|Equally|Beyond this|Taken together|'
+        r'To summarise|In summary|In conclusion|To recapitulate|Overall|'
+        r'Consistent with|In accordance|Aligned with|Congruent|Within the|'
+        r'Against the|Research conducted|Work undertaken|The investigation|'
+        r'The inquiry|The examination|Findings from|The analysis|'
+        r'This investigation|The present|This examination|The current|'
+        r'This scholarly)',
+        re.IGNORECASE,
+    )
+    # Pattern: sentence starts with a single word followed by a comma — already
+    # has a connector/adverb opener.
+    _ADVERB_OPENER_RE = re.compile(r'^\w+,\s', re.IGNORECASE)
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', text) if s.strip()]
+    available = list(_DISCOURSE_OPENERS)
+    result: List[str] = []
+    for i, sent in enumerate(sentences):
+        if (i == 0 or _PROTECT_RE.search(sent) or _CONNECTOR_RE.match(sent)
+                or _ADVERB_OPENER_RE.match(sent)
+                or random.random() >= rate or not available):
+            result.append(sent)
+            continue
+        marker = random.choice(available)
+        available.remove(marker)
+        new_sent = sent[0].lower() + sent[1:] if sent and sent[0].isupper() else sent
+        result.append(f"{marker} {new_sent}")
+    return " ".join(result)
+
+
 # ── Public API ─────────────────────────────────────────────────────────────
 
 def humanize(text: str, config: dict = None) -> str:
@@ -1288,14 +1580,17 @@ def humanize(text: str, config: dict = None) -> str:
 
     The pipeline rewrites *style* while strictly preserving *meaning*:
       1. AI-cliché neutralisation
-      2. POS-aware synonym replacement (built-in thesaurus + PyMultiDictionary)
-      3. Optional deep synonym pass at a higher rate (still meaning-safe)
-      4. Multi-language back-translation (EN→DE→FR→ES→EN) for phrase-level rewriting
-      5. Active-to-passive voice conversion on a fraction of sentences
-      6. Sentence-length burstiness balancing
-      7. Adverbial placement shifting
-      8. Reporting verb diversification
-      9. Controlled low-density noise injection
+      2. Multi-word academic phrase substitution (phrase-level patterns)
+      3. POS-aware synonym replacement (built-in thesaurus + PyMultiDictionary)
+      4. Optional deep synonym pass at a higher rate (still meaning-safe)
+      5. Multi-language back-translation (EN→DE→FR→ES→EN) for phrase-level rewriting
+      6. Active-to-passive voice conversion on a fraction of sentences
+      7. Sentence-length burstiness balancing
+      8. Structural sentence rewriting (clause inversion / fronting)
+      9. Discourse-marker injection for opener variety
+      10. Adverbial placement shifting
+      11. Reporting verb diversification
+      12. Controlled low-density noise injection
 
     Protected tokens (citations, quotes, equations, acronyms, legal terms, named
     entities) are **never altered** at any stage.  Technical terms listed in
@@ -1303,15 +1598,20 @@ def humanize(text: str, config: dict = None) -> str:
     preserved throughout the synonym-replacement passes.
 
     *config* keys (all optional):
-        synonym_rate (float)           – standard synonym-pass rate (default 0.20)
-        deep_synonym_rate (float)      – deep-pass rate (default 0.35)
+        synonym_rate (float)           – standard synonym-pass rate (default 0.90)
+        deep_synonym_rate (float)      – deep-pass rate (default 0.95)
         enable_deep_synonyms (bool)    – run deep synonym pass (default True)
         enable_back_translation (bool) – run back-translation (default True)
         back_translation_languages (list) – pivot chain (default ['de','fr','es'])
         enable_active_to_passive (bool) – convert some active sentences (default True)
-        passive_rate (float)           – fraction of sentences converted (default 0.25)
+        passive_rate (float)           – fraction of sentences converted (default 0.60)
         enable_pegasus (bool)          – run T5/Pegasus sentence paraphraser (default True)
         enable_noise (bool)            – inject minor stylistic noise (default True)
+        enable_phrase_substitution (bool) – run phrase-level substitution (default True)
+        enable_sentence_rewrite (bool) – run structural sentence rewriting (default True)
+        sentence_rewrite_rate (float)  – fraction of sentences restructured (default 0.30)
+        enable_opener_diversification (bool) – vary sentence openers (default True)
+        opener_diversification_rate (float)  – fraction of sentences given new openers (default 0.25)
     """
     if config is None:
         config = {}
@@ -1319,16 +1619,21 @@ def humanize(text: str, config: dict = None) -> str:
     # Step 1: Replace AI clichés with natural academic alternatives
     text = neutralize_cliches(text)
 
-    # Step 2: POS-aware meaning-safe synonym replacement
+    # Step 2: Multi-word academic phrase substitution (handles full phrases
+    # holistically before individual words are touched)
+    if config.get("enable_phrase_substitution", True):
+        text = substitute_academic_phrases(text)
+
+    # Step 3: POS-aware meaning-safe synonym replacement
     # (built-in thesaurus → spacy-wordnet → PyMultiDictionary → PyDictionary → WordNet)
     # Technical terms from settings.yaml are never altered.
-    text = replace_synonyms(text, replacement_rate=config.get("synonym_rate", 0.20))
+    text = replace_synonyms(text, replacement_rate=config.get("synonym_rate", 0.90))
 
-    # Step 3: Optional deep synonym pass
+    # Step 4: Optional deep synonym pass
     if config.get("enable_deep_synonyms", True):
-        text = deep_synonym_replace(text, replacement_rate=config.get("deep_synonym_rate", 0.35))
+        text = deep_synonym_replace(text, replacement_rate=config.get("deep_synonym_rate", 0.95))
 
-    # Step 4: Multi-language back-translation for phrase-level paraphrasing
+    # Step 5: Multi-language back-translation for phrase-level paraphrasing
     if config.get("enable_back_translation", True):
         try:
             from core.transformer import back_translate
@@ -1337,7 +1642,7 @@ def humanize(text: str, config: dict = None) -> str:
         except Exception as exc:
             warnings.warn(f"Back-translation in humanizer failed: {exc}")
 
-    # Step 4b: T5/Pegasus sentence-level paraphrasing (complete sentence reconstruction)
+    # Step 5b: T5/Pegasus sentence-level paraphrasing (complete sentence reconstruction)
     if config.get("enable_pegasus", True):
         try:
             from core.transformer import t5_pegasus_paraphrase
@@ -1345,26 +1650,38 @@ def humanize(text: str, config: dict = None) -> str:
         except Exception as exc:
             warnings.warn(f"T5/Pegasus paraphrase in humanizer failed: {exc}")
 
-    # Step 5: Active-to-passive voice conversion
+    # Step 6: Active-to-passive voice conversion
     if config.get("enable_active_to_passive", True):
         try:
             from core.transformer import convert_active_to_passive
             text = convert_active_to_passive(
-                text, rate=config.get("passive_rate", 0.25)
+                text, rate=config.get("passive_rate", 0.60)
             )
         except Exception as exc:
             warnings.warn(f"Active-to-passive conversion in humanizer failed: {exc}")
 
-    # Step 6: Sentence-length burstiness balancing
+    # Step 7: Sentence-length burstiness balancing
     text = balance_burstiness(text)
 
-    # Step 7: Adverbial placement shifting
+    # Step 8: Structural sentence rewriting (clause inversion / fronting)
+    if config.get("enable_sentence_rewrite", True):
+        text = rewrite_sentence_structure(
+            text, rate=config.get("sentence_rewrite_rate", 0.30)
+        )
+
+    # Step 9: Discourse-marker injection for opener variety
+    if config.get("enable_opener_diversification", True):
+        text = diversify_sentence_openers(
+            text, rate=config.get("opener_diversification_rate", 0.25)
+        )
+
+    # Step 10: Adverbial placement shifting
     text = shift_adverbials(text)
 
-    # Step 8: Reporting verb diversification
+    # Step 11: Reporting verb diversification
     text = diversify_reporting_verbs(text)
 
-    # Step 9: Low-density noise injection
+    # Step 12: Low-density noise injection
     if config.get("enable_noise", True):
         text = inject_noise(text)
 
