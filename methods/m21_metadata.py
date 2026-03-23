@@ -129,6 +129,8 @@ def method_23_predictability_breaking(
     Identify high-probability words via simple heuristics and replace
     with semantically accurate but statistically unexpected synonyms.
     (Full GPT-2 green-zone detection requires transformers.)
+    Falls back to the built-in deep_synonym_replace for broad word
+    substitution when transformers are unavailable.
     """
     progress("Method 23: Predictability Breaking", 0.0)
     try:
@@ -153,7 +155,8 @@ def method_23_predictability_breaking(
             result.append(sent)  # preserve for now; full replacement complex
         text = " ".join(result)
     except ImportError:
-        # Fallback: replace common predictable phrases
+        # Primary fallback: replace common predictable phrases, then do a
+        # broad synonym pass to maximise lexical variation
         predictable = {
             "it is important to note": "it bears emphasising",
             "it should be noted that": "it is worth observing",
@@ -163,6 +166,12 @@ def method_23_predictability_breaking(
         }
         for phrase, replacement in predictable.items():
             text = re.sub(re.escape(phrase), replacement, text, flags=re.IGNORECASE)
+        # Deep synonym pass using POS-aware built-in thesaurus
+        try:
+            from core.humanizer import deep_synonym_replace
+            text = deep_synonym_replace(text, replacement_rate=0.55)
+        except Exception as exc:
+            warnings.warn(f"Deep synonym replace in method 23 failed: {exc}")
     except Exception as exc:
         warnings.warn(f"Predictability breaking failed: {exc}")
     progress("Method 23: Predictability Breaking", 100.0)

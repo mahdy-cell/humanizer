@@ -9,6 +9,9 @@ font_name: Times New Roman
 font_size: 12
 line_spacing: 2.0
 self_test_threshold: 0.05
+synonym_rate: 0.35
+deep_synonym_rate: 0.55
+enable_deep_synonyms: true
 back_translation_languages:
   - de
   - ja
