@@ -46,27 +46,32 @@ Error switching to pull request: Failed to execute git
 Failed to apply changes from pull request: Failed to execute git
 ```
 
-**Run these commands in your terminal:**
+These errors have **two root causes**:
+
+1. **Shallow clone** — git history is incomplete; the initial commit appears as `(grafted)`.
+2. **Restricted fetch refspec** — only the PR branch is tracked, so `origin/main` is missing and tools cannot find the merge base.
+
+**Fix both with these commands (run inside the repo folder):**
 
 ```bash
-# 1. Ensure git is installed and on PATH
-git --version
+# Fix 1: restore full history and remove the shallow marker
+git fetch --unshallow origin
 
-# 2. Clone the repository (full clone, not shallow)
-git clone --no-local https://github.com/mahdy-cell/humanizer.git
-cd humanizer
+# Fix 2: configure git to fetch ALL branches (not just the PR branch)
+git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*"
 
-# 3. Fetch the PR branch
+# Fetch everything (this will now also download origin/main)
 git fetch origin
 
-# 4. Checkout the PR branch directly
+# Switch to the PR branch
 git checkout copilot/build-academic-text-humanization-program
 ```
 
-If you already have a clone that was checked out shallowly, run:
+**Alternatively, do a fresh full clone:**
+
 ```bash
-git fetch --unshallow origin
-git fetch origin
+git clone --no-local https://github.com/mahdy-cell/humanizer.git
+cd humanizer
 git checkout copilot/build-academic-text-humanization-program
 ```
 
